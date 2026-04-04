@@ -6,6 +6,7 @@ function results = ChannelFixedPointTools()
 %   1) 定点化后的 MAT
 %   2) 滤波器系数文件 .irc (32-bit word, UTF-8 text)
 %   3) 时延系数文件 .ird (32-bit word, UTF-8 text)
+%   4) 手工检查辅助文本（十进制展开）
 %
 % 与需求文档对齐的核心约束:
 %   - H 组织: Nsamples x (T_num*3) x (IN_num*OUT_num)
@@ -234,12 +235,16 @@ outPrefix = fullfile(defaultOutputDir, baseName);
 outIrc = [outPrefix, '.irc'];
 outIrd = [outPrefix, '.ird'];
 outMat = [outPrefix, '_fixedpoint.mat'];
+outIrcDebug = [outPrefix, '_irc_decimal.txt'];
+outIrdDebug = [outPrefix, '_ird_decimal.txt'];
 
 % 写 .irc/.ird，UTF-8 文本：
 %   连续写 tap 字流，但每4个32-bit字换一行，满足4x32bit对齐显示。
 %   每行固定 4*8 = 32 个 hex 字符。
 writeHexAligned4(outIrc, ircWords);
 writeHexAligned4(outIrd, irdWords);
+writeIrcDebugDecimal(outIrcDebug, ircWords);
+writeIrdDebugDecimal(outIrdDebug, irdWords);
 
 % 汇总元数据，便于回溯参数与结果
 meta = struct();
@@ -262,6 +267,8 @@ meta.delay_unit = delayUnitText;
 meta.fpga_clock_hz = fpgaClock;
 meta.max_abs_error = maxErr;
 meta.mean_abs_error = meanErr;
+meta.manual_debug_irc_decimal = outIrcDebug;
+meta.manual_debug_ird_decimal = outIrdDebug;
 
 % 构造“和 H 同结构”的量化后矩阵:
 % 按最新 codex.md，Hq 中 delay 列改为 FPGA 时钟计数整数，保证输出自洽
@@ -287,7 +294,7 @@ irc_words = ircWords; %#ok<NASGU>
 ird_words = irdWords; %#ok<NASGU>
 
 % 保存 MAT 输出
-save(outMat, 'qRealFi', 'qImagFi', 'Hq', 'meta', ...
+save(outMat, 'H', 'qRealFi', 'qImagFi', 'Hq', 'meta', ...
     'delay_clks', 'IQ_max', 'CIR_update_rate', ...
     'normalize', 'IN_num', 'OUT_num', 'T_num', 'irc_words', 'ird_words');
 
@@ -295,12 +302,16 @@ fprintf('\n=== 输出文件 ===\n');
 fprintf('%s\n', outMat);
 fprintf('%s\n', outIrc);
 fprintf('%s\n', outIrd);
+fprintf('%s\n', outIrcDebug);
+fprintf('%s\n', outIrdDebug);
 
 % 返回结构体，便于脚本化调用
 results = struct();
 results.out_mat = outMat;
 results.out_irc = outIrc;
 results.out_ird = outIrd;
+results.out_irc_decimal = outIrcDebug;
+results.out_ird_decimal = outIrdDebug;
 results.max_abs_error = maxErr;
 results.mean_abs_error = meanErr;
 results.meta = meta;
@@ -518,6 +529,60 @@ for i = 1:wordsPerLine:numel(words)
     lineWords = words(i:i+wordsPerLine-1);
     for k = 1:wordsPerLine
         fprintf(fid, '%08X', lineWords(k));
+    end
+    fprintf(fid, '\n');
+end
+end
+
+function writeIrcDebugDecimal(pathName, words)
+% writeIrcDebugDecimal
+% .irc 手工检查辅助文件：
+%   每个 32-bit 字拆成 2 个 int16 十进制数（real, imag），
+%   每行对应 4 个 32-bit 字，因此每行输出 8 个十进制数。
+fid = fopen(pathName, 'w', 'n', 'UTF-8');
+if fid < 0
+    error('无法写入文件: %s', pathName);
+end
+c = onCleanup(@() fclose(fid)); %#ok<NASGU>
+
+wordsPerLine = 4;
+for i = 1:wordsPerLine:numel(words)
+    lineWords = words(i:min(i + wordsPerLine - 1, numel(words)));
+    vals = zeros(1, numel(lineWords) * 2);
+    vIdx = 1;
+    for k = 1:numel(lineWords)
+        w = lineWords(k);
+        re = typecast(uint16(bitand(w, uint32(hex2dec('FFFF')))), 'int16');
+        im = typecast(uint16(bitshift(w, -16)), 'int16');
+        vals(vIdx) = double(re);
+        vals(vIdx + 1) = double(im);
+        vIdx = vIdx + 2;
+    end
+    fprintf(fid, '%d', vals(1));
+    for k = 2:numel(vals)
+        fprintf(fid, ' %d', vals(k));
+    end
+    fprintf(fid, '\n');
+end
+end
+
+function writeIrdDebugDecimal(pathName, words)
+% writeIrdDebugDecimal
+% .ird 手工检查辅助文件：
+%   每个 32-bit 字按无符号整数转十进制，
+%   每行对应 4 个 32-bit 字，因此每行输出 4 个十进制数。
+fid = fopen(pathName, 'w', 'n', 'UTF-8');
+if fid < 0
+    error('无法写入文件: %s', pathName);
+end
+c = onCleanup(@() fclose(fid)); %#ok<NASGU>
+
+wordsPerLine = 4;
+for i = 1:wordsPerLine:numel(words)
+    lineWords = double(words(i:min(i + wordsPerLine - 1, numel(words))));
+    fprintf(fid, '%.0f', lineWords(1));
+    for k = 2:numel(lineWords)
+        fprintf(fid, ' %.0f', lineWords(k));
     end
     fprintf(fid, '\n');
 end

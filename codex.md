@@ -87,6 +87,8 @@ fclose(delay_coff_file);
 # 更新
 * 增加询问用户FPGA时钟频率的步骤，默认 245.76e6Hz，fpgaClock = 245.76e6，调试模式时 fpgaClock = 1e9;
 * 输出的*.mat中Hq中所有关于时延的列，不应该保留以时间ns为单位的值（原始的 *.mat），应该用delay_clks中对应的整数，这样才是一个完备且一致的输出。
+* 20260404 输出的*.mat 中保留原有的 变量H（浮点信道系数时延数据）格式不变，方便后期用户或程序调用，也方便查看H和Hq。
+* 在README.md 中增加对于生成的 - `xxx_fixedpoint.mat`，`xxx.irc`，`xxx.ird` 说明。
 
 
 
