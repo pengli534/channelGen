@@ -44,15 +44,21 @@ if ~isfolder(defaultOutputDir)
     mkdir(defaultOutputDir);
 end
 
-% 可选: 先生成一个“人工可辨识”的验证样例
-% 样例特征:
-%   - IN=4, OUT=4, T_num=24
-%   - real/imag/delay 使用可识别编码，便于人工对照
-genTest = askNumeric('是否生成验证性 .mat (4x4, T_num=24)？(1/0, 默认1): ', 1);
+% 可选: 先生成一组“人工可辨识”的验证样例
+% 样例集覆盖:
+%   - 基础可读性
+%   - 时延变化量正/负/零变化
+%   - T_num 非4倍数时的补零对齐
+%   - 子信道完整性
+%   - 定点量化边界
+genTest = askNumeric('是否生成验证样例集 .mat？(1/0, 默认1): ', 1);
 if genTest == 1
-    testMat = fullfile(scriptDir, 'validation_H_4x4_t24.mat');
-    generateValidationMat(testMat);
-    fprintf('已生成验证文件: %s\n', testMat);
+    validationDir = fullfile(scriptDir, 'validation_mats');
+    validationFiles = generateValidationMats(validationDir);
+    fprintf('已生成 %d 个验证文件:\n', numel(validationFiles));
+    for i = 1:numel(validationFiles)
+        fprintf('  %s\n', validationFiles{i});
+    end
 end
 
 % 文件选择起始目录优先使用 cir_mat_file
@@ -79,7 +85,7 @@ H = src.H;
 if ~isnumeric(H)
     error('H 必须是数值数组。');
 end
-if ndims(H) ~= 2 && ndims(H) ~= 3
+if ~(ismatrix(H) || ndims(H) == 3)
     error('H 维度必须是 2D 或 3D。');
 end
 
@@ -94,7 +100,7 @@ if mod(packedCols, 3) ~= 0
     error('H 第二维必须是 3 的整数倍（delay/real/imag）。');
 end
 T_num = packedCols / 3;
-if ndims(H) == 2
+if ismatrix(H)
     Nchannel = 1;
 else
     Nchannel = size(H, 3);
@@ -273,7 +279,7 @@ meta.manual_debug_ird_decimal = outIrdDebug;
 % 构造“和 H 同结构”的量化后矩阵:
 % 按最新 codex.md，Hq 中 delay 列改为 FPGA 时钟计数整数，保证输出自洽
 Hq = zeros(size(H), 'double');
-if ndims(H) == 2
+if ismatrix(H)
     Hq(:,1:3:end) = double(delayClocks(:,:,1));
     Hq(:,2:3:end) = double(qReal(:,:,1));
     Hq(:,3:3:end) = double(qImag(:,:,1));
@@ -286,12 +292,12 @@ else
 end
 
 % 兼容旧版本字段名，便于历史脚本和人工排查继续复用。
-delay_clks = delayClocks; %#ok<NASGU>
-IQ_max = metaCompatibleScalar(IQ_max); %#ok<NASGU>
-CIR_update_rate = cirRate; %#ok<NASGU>
-normalize = normalizeFlag; %#ok<NASGU>
-irc_words = ircWords; %#ok<NASGU>
-ird_words = irdWords; %#ok<NASGU>
+delay_clks = delayClocks;
+IQ_max = metaCompatibleScalar(IQ_max);
+CIR_update_rate = cirRate;
+normalize = normalizeFlag;
+irc_words = ircWords;
+ird_words = irdWords;
 
 % 保存 MAT 输出
 save(outMat, 'H', 'qRealFi', 'qImagFi', 'Hq', 'meta', ...
@@ -335,7 +341,7 @@ function X = extractTriplet(H, pos)
 %   3D: [Nsamples, T_num*3, Nchannel]
 %
 % 输出统一为 3D: [Nsamples, T_num, Nchannel]
-if ndims(H) == 2
+if ismatrix(H)
     X = zeros(size(H,1), size(H,2)/3, 1);
     X(:,:,1) = H(:,pos:3:end);
 else
@@ -524,7 +530,7 @@ fid = fopen(pathName, 'w', 'n', 'UTF-8');
 if fid < 0
     error('无法写入文件: %s', pathName);
 end
-c = onCleanup(@() fclose(fid)); %#ok<NASGU>
+c = onCleanup(@() fclose(fid));
 for i = 1:wordsPerLine:numel(words)
     lineWords = words(i:i+wordsPerLine-1);
     for k = 1:wordsPerLine
@@ -543,7 +549,7 @@ fid = fopen(pathName, 'w', 'n', 'UTF-8');
 if fid < 0
     error('无法写入文件: %s', pathName);
 end
-c = onCleanup(@() fclose(fid)); %#ok<NASGU>
+c = onCleanup(@() fclose(fid));
 
 wordsPerLine = 4;
 for i = 1:wordsPerLine:numel(words)
@@ -554,8 +560,8 @@ for i = 1:wordsPerLine:numel(words)
         w = lineWords(k);
         re = typecast(uint16(bitand(w, uint32(hex2dec('FFFF')))), 'int16');
         im = typecast(uint16(bitshift(w, -16)), 'int16');
-        vals(vIdx) = double(re);
-        vals(vIdx + 1) = double(im);
+        vals(vIdx) = double(im);
+        vals(vIdx + 1) = double(re);
         vIdx = vIdx + 2;
     end
     fprintf(fid, '%d', vals(1));
@@ -575,7 +581,7 @@ fid = fopen(pathName, 'w', 'n', 'UTF-8');
 if fid < 0
     error('无法写入文件: %s', pathName);
 end
-c = onCleanup(@() fclose(fid)); %#ok<NASGU>
+c = onCleanup(@() fclose(fid));
 
 wordsPerLine = 4;
 for i = 1:wordsPerLine:numel(words)
@@ -588,43 +594,215 @@ for i = 1:wordsPerLine:numel(words)
 end
 end
 
-function generateValidationMat(outFile)
-% generateValidationMat
-% 生成人工可核对的测试数据:
-%   - Nsamples=6, T_num=24, IN=4, OUT=4
-%   - code = m*1000 + n*100 + t
-%   - real = code
-%   - imag = code + 50
-%   - delay(ns) = code + s*10
-%
-% 这样在文本输出中可以快速定位:
-%   来自哪个 (IN, OUT, TAP, sample)
-Nsamples = 6;
+function outFiles = generateValidationMats(outDir)
+% generateValidationMats
+% 生成一组职责明确的验证样例，避免单个样例承担全部验证目标。
+if ~isfolder(outDir)
+    mkdir(outDir);
+end
+
+cases = {
+    makeValidationCaseBasic(), ...
+    makeValidationCaseDelayDelta(), ...
+    makeValidationCasePadding(), ...
+    makeValidationCaseChannelCoverage(), ...
+    makeValidationCaseQuantBoundary()};
+
+outFiles = cell(numel(cases), 1);
+for i = 1:numel(cases)
+    data = cases{i};
+    outFile = fullfile(outDir, data.fileName);
+    H = data.H;
+    IN_num = data.IN_num;
+    OUT_num = data.OUT_num;
+    cir_up_rate = data.cir_up_rate;
+    validation_info = data.validation_info;
+    save(outFile, 'H', 'IN_num', 'OUT_num', 'cir_up_rate', 'validation_info');
+    outFiles{i} = outFile;
+end
+end
+
+function data = makeValidationCaseBasic()
+% 基础可读性样例:
+%   - 便于人工识别 sample / IN / OUT / tap
+Nsamples = 4;
 T_num = 24;
 IN_num = 4;
 OUT_num = 4;
-Nchannel = IN_num * OUT_num;
 cir_up_rate = 1e6;
+H = zeros(Nsamples, T_num * 3, IN_num * OUT_num);
 
-H = zeros(Nsamples, T_num * 3, Nchannel);
 for s = 1:Nsamples
     for m = 1:IN_num
         for n = 1:OUT_num
-            ch = (m - 1) * OUT_num + n;
+            ch = mapChannelIndex(m, n, OUT_num);
             for t = 1:T_num
                 code = m * 1000 + n * 100 + t;
-                delay_ns = code + s * 10;
+                delay_ns = 1000 + code * 10 + s * 40;
                 real_v = code;
                 imag_v = code + 50;
-
-                b = (t - 1) * 3;
-                H(s, b + 1, ch) = delay_ns;   % delay
-                H(s, b + 2, ch) = real_v;     % real
-                H(s, b + 3, ch) = imag_v;     % imag
+                H = setTapTriplet(H, s, t, ch, delay_ns, real_v, imag_v);
             end
         end
     end
 end
 
-save(outFile, 'H', 'IN_num', 'OUT_num', 'cir_up_rate');
+data = wrapValidationCase( ...
+    'validation_basic.mat', H, IN_num, OUT_num, cir_up_rate, ...
+    '基础可读性样例', ...
+    {'验证 H 的维度组织'; '验证 IN/OUT/tap/sample 编码是否易于人工识别'; '验证基础 .irc/.ird 落盘顺序'});
+end
+
+function data = makeValidationCaseDelayDelta()
+% 时延变化量样例:
+%   - 同时覆盖时延增大/减小/不变三种情况
+Nsamples = 5;
+T_num = 24;
+IN_num = 4;
+OUT_num = 4;
+cir_up_rate = 1e6;
+H = zeros(Nsamples, T_num * 3, IN_num * OUT_num);
+sampleOffsetNs = [0, 40, 40, 10, 70];
+
+for s = 1:Nsamples
+    for m = 1:IN_num
+        for n = 1:OUT_num
+            ch = mapChannelIndex(m, n, OUT_num);
+            for t = 1:T_num
+                code = m * 1000 + n * 100 + t;
+                delay_ns = 5000 + code * 12 + sampleOffsetNs(s);
+                real_v = code;
+                imag_v = -(code + 25);
+                H = setTapTriplet(H, s, t, ch, delay_ns, real_v, imag_v);
+            end
+        end
+    end
+end
+
+data = wrapValidationCase( ...
+    'validation_delay_delta.mat', H, IN_num, OUT_num, cir_up_rate, ...
+    '时延变化量样例', ...
+    {'检查 .ird 中相邻时刻变化量'; 'sample 1->2 为增大'; 'sample 2->3 为不变'; 'sample 3->4 为减小'; 'sample 4->5 再次增大'});
+end
+
+function data = makeValidationCasePadding()
+% 补零对齐样例:
+%   - T_num 非4的整数倍，用于稳定触发 TZ_num 补零
+Nsamples = 3;
+T_num = 22;
+IN_num = 4;
+OUT_num = 4;
+cir_up_rate = 1e6;
+H = zeros(Nsamples, T_num * 3, IN_num * OUT_num);
+
+for s = 1:Nsamples
+    for m = 1:IN_num
+        for n = 1:OUT_num
+            ch = mapChannelIndex(m, n, OUT_num);
+            for t = 1:T_num
+                code = m * 1000 + n * 100 + t;
+                delay_ns = 800 + t * 25 + s * 100 + m * 10 + n;
+                real_v = 100 + code;
+                imag_v = -(100 + code);
+                H = setTapTriplet(H, s, t, ch, delay_ns, real_v, imag_v);
+            end
+        end
+    end
+end
+
+data = wrapValidationCase( ...
+    'validation_padding.mat', H, IN_num, OUT_num, cir_up_rate, ...
+    '补零对齐样例', ...
+    {'T_num=22，应补齐到24'; '用于检查 TZ_num=2 时 .irc/.ird 尾部补零'; '用于检查每4个32-bit字换行'});
+end
+
+function data = makeValidationCaseChannelCoverage()
+% 子信道完整性样例:
+%   - 不同 out_num / in_num 使用明显不同编码
+Nsamples = 2;
+T_num = 8;
+IN_num = 4;
+OUT_num = 4;
+cir_up_rate = 1e6;
+H = zeros(Nsamples, T_num * 3, IN_num * OUT_num);
+
+for s = 1:Nsamples
+    for m = 1:IN_num
+        for n = 1:OUT_num
+            ch = mapChannelIndex(m, n, OUT_num);
+            channelTag = m * 10000 + n * 1000;
+            for t = 1:T_num
+                delay_ns = 2000 + channelTag + t * 20 + s * 200;
+                real_v = channelTag + t * 10 + 1;
+                imag_v = -(channelTag + t * 10 + 2);
+                H = setTapTriplet(H, s, t, ch, delay_ns, real_v, imag_v);
+            end
+        end
+    end
+end
+
+data = wrapValidationCase( ...
+    'validation_channel_coverage.mat', H, IN_num, OUT_num, cir_up_rate, ...
+    '子信道完整性样例', ...
+    {'不同 (in_num,out_num) 使用明显不同编码'; '用于检查偶数/奇数 out_num 都被完整写出'; '同时可检查 .irc 和 .ird 的通道覆盖'});
+end
+
+function data = makeValidationCaseQuantBoundary()
+% 定点边界样例:
+%   - 覆盖小数舍入、边界值、越界饱和
+Nsamples = 2;
+T_num = 8;
+IN_num = 2;
+OUT_num = 2;
+cir_up_rate = 1e6;
+H = zeros(Nsamples, T_num * 3, IN_num * OUT_num);
+realPattern = [-32768.4, -32767.5, -1.5, -0.49, 0.49, 1.5, 32766.6, 40000.2];
+imagPattern = [40000.2, 32766.6, 1.5, 0.49, -0.49, -1.5, -32767.5, -32768.4];
+
+for s = 1:Nsamples
+    for m = 1:IN_num
+        for n = 1:OUT_num
+            ch = mapChannelIndex(m, n, OUT_num);
+            tweak = (m - 1) * 0.125 + (n - 1) * 0.25 + (s - 1) * 0.5;
+            for t = 1:T_num
+                delay_ns = 100 + t * 8 + s * 16;
+                real_v = realPattern(t) + tweak;
+                imag_v = imagPattern(t) - tweak;
+                H = setTapTriplet(H, s, t, ch, delay_ns, real_v, imag_v);
+            end
+        end
+    end
+end
+
+data = wrapValidationCase( ...
+    'validation_quant_boundary.mat', H, IN_num, OUT_num, cir_up_rate, ...
+    '定点边界样例', ...
+    {'覆盖接近 int16 上下限的值'; '覆盖超范围后的饱和'; '覆盖接近 0 和 .5 的舍入行为'});
+end
+
+function data = wrapValidationCase(fileName, H, IN_num, OUT_num, cir_up_rate, target, checkpoints)
+validation_info = struct();
+validation_info.target = target;
+validation_info.checkpoints = checkpoints;
+validation_info.generated_by = 'ChannelFixedPointTools';
+validation_info.version = 'validation_suite_v1';
+
+data = struct();
+data.fileName = fileName;
+data.H = H;
+data.IN_num = IN_num;
+data.OUT_num = OUT_num;
+data.cir_up_rate = cir_up_rate;
+data.validation_info = validation_info;
+end
+
+function H = setTapTriplet(H, sampleIdx, tapIdx, channelIdx, delayValue, realValue, imagValue)
+baseIdx = (tapIdx - 1) * 3;
+H(sampleIdx, baseIdx + 1, channelIdx) = delayValue;
+H(sampleIdx, baseIdx + 2, channelIdx) = realValue;
+H(sampleIdx, baseIdx + 3, channelIdx) = imagValue;
+end
+
+function ch = mapChannelIndex(inIdx, outIdx, OUT_num)
+ch = (inIdx - 1) * OUT_num + outIdx;
 end
