@@ -42,6 +42,16 @@ elseif isfield(src, 'Hq')
 else
     H = [];
 end
+if isfield(src, 'H')
+    H_float = src.H;
+else
+    H_float = [];
+end
+if isfield(src, 'Hq')
+    H_quantized = src.Hq;
+else
+    H_quantized = [];
+end
 
 if ~isempty(H)
     if ~isnumeric(H) || ~(ismatrix(H) || ndims(H)==3)
@@ -118,6 +128,9 @@ fprintf('IRC: %s\n', ircFile);
 fprintf('IRD: %s\n', irdFile);
 fprintf('Nsamples=%d, T_num=%d, T1_num=%d, IN=%d, OUT=%d, channels=%d\n', ...
     Nsamples, T_num, T1_num, IN_num, OUT_num, Nchannel);
+if isfield(src, 'meta') && isstruct(src.meta) && isfield(src.meta, 'mimo_bidi_enabled')
+    fprintf('MIMO双向测试: %d\n', double(src.meta.mimo_bidi_enabled));
+end
 
 % 3) 从 H 生成期望字流
 if ~isempty(H)
@@ -149,6 +162,27 @@ printCmp(rIrcSame, rIrcDiff, rIrcIdx, rIrcGot, rIrcExp, numel(gotIrc), numel(exp
 fprintf('\n===== IRD 校验结果 =====\n');
 printCmp(rIrdSame, rIrdDiff, rIrdIdx, rIrdGot, rIrdExp, numel(gotIrd), numel(expIrd));
 
+mimoBidiReport = struct('enabled', false, 'supported', false, 'H_same', true, ...
+    'Hq_same', true, 'H_nonzero_count', 0, 'Hq_nonzero_count', 0);
+if isfield(src, 'meta') && isstruct(src.meta) && isfield(src.meta, 'mimo_bidi_enabled') ...
+        && double(src.meta.mimo_bidi_enabled) == 1
+    mimoBidiReport.enabled = true;
+    mimoBidiReport.supported = (IN_num == OUT_num && mod(IN_num, 2) == 0);
+    if ~isempty(H_float)
+        [mimoBidiReport.H_same, mimoBidiReport.H_nonzero_count] = ...
+            checkMimoBidiZeroed(H_float, IN_num, OUT_num);
+    end
+    if ~isempty(H_quantized)
+        [mimoBidiReport.Hq_same, mimoBidiReport.Hq_nonzero_count] = ...
+            checkMimoBidiZeroed(H_quantized, IN_num, OUT_num);
+    end
+
+    fprintf('\n===== MIMO双向测试校验 =====\n');
+    fprintf('supported=%d, H_same=%d, H_nonzero_count=%d, Hq_same=%d, Hq_nonzero_count=%d\n', ...
+        mimoBidiReport.supported, mimoBidiReport.H_same, mimoBidiReport.H_nonzero_count, ...
+        mimoBidiReport.Hq_same, mimoBidiReport.Hq_nonzero_count);
+end
+
 report = struct();
 report.input = struct('mat', matFile, 'irc', ircFile, 'ird', irdFile);
 report.meta = struct('Nsamples', Nsamples, 'T_num', T_num, 'T1_num', T1_num, ...
@@ -157,6 +191,7 @@ report.irc = struct('same', rIrcSame, 'diff_count', rIrcDiff, 'first_diff_idx', 
     'got', rIrcGot, 'exp', rIrcExp, 'file_len', numel(gotIrc), 'exp_len', numel(expIrc));
 report.ird = struct('same', rIrdSame, 'diff_count', rIrdDiff, 'first_diff_idx', rIrdIdx, ...
     'got', rIrdGot, 'exp', rIrdExp, 'file_len', numel(gotIrd), 'exp_len', numel(expIrd));
+report.mimo_bidi = mimoBidiReport;
 end
 
 function [IN_num, OUT_num] = inferInOut(src, Nchannel)
@@ -407,4 +442,33 @@ fprintf('same=%d, diff=%d, len(file/exp)=%d/%d\n', same, diffCount, gotLen, expL
 if ~same
     fprintf('first_diff_idx=%d, got=%08X, exp=%08X\n', firstIdx, gotVal, expVal);
 end
+end
+
+function [same, nonzeroCount] = checkMimoBidiZeroed(H, IN_num, OUT_num)
+same = true;
+nonzeroCount = 0;
+if isempty(H) || ~(IN_num == OUT_num && mod(IN_num, 2) == 0)
+    same = false;
+    return;
+end
+
+H_delay = extractTriplet(H, 1);
+H_real = extractTriplet(H, 2);
+H_imag = extractTriplet(H, 3);
+halfIn = IN_num / 2;
+halfOut = OUT_num / 2;
+
+for m = 1:IN_num
+    for n = 1:OUT_num
+        inBlock = 1 + (m > halfIn);
+        outBlock = 1 + (n > halfOut);
+        if inBlock ~= outBlock
+            ch = (m - 1) * OUT_num + n;
+            nz = nnz(H_delay(:,:,ch) ~= 0) + nnz(H_real(:,:,ch) ~= 0) + nnz(H_imag(:,:,ch) ~= 0);
+            nonzeroCount = nonzeroCount + nz;
+        end
+    end
+end
+
+same = nonzeroCount == 0;
 end

@@ -109,6 +109,9 @@ end
 % IN/OUT 优先从 MAT 的元数据读取，否则按通道数推断
 [IN_num, OUT_num] = inferInOut(src, Nchannel);
 
+% 可选: 对偶数维方阵 MIMO 执行“双向测试”预处理
+[H, mimoBidiEnabled] = maybeApplyMimoBidiTest(H, IN_num, OUT_num);
+
 % 从三元组中提取各分量
 % H_delay/H_real/H_imag 统一输出成 3D: [Nsamples, T_num, Nchannel]
 H_delay = extractTriplet(H, 1);
@@ -273,6 +276,8 @@ meta.delay_unit = delayUnitText;
 meta.fpga_clock_hz = fpgaClock;
 meta.max_abs_error = maxErr;
 meta.mean_abs_error = meanErr;
+meta.mimo_bidi_enabled = mimoBidiEnabled;
+meta.mimo_bidi_supported = double(IN_num == OUT_num && mod(IN_num, 2) == 0);
 meta.manual_debug_irc_decimal = outIrcDebug;
 meta.manual_debug_ird_decimal = outIrdDebug;
 
@@ -415,6 +420,41 @@ else
 end
 end
 
+function [H, enabled] = maybeApplyMimoBidiTest(H, IN_num, OUT_num)
+% maybeApplyMimoBidiTest
+% 仅当 IN_num == OUT_num 时显示选项；仅偶数维方阵 MIMO 支持该操作。
+enabled = 0;
+if IN_num ~= OUT_num
+    return;
+end
+
+if mod(IN_num, 2) ~= 0
+    fprintf('检测到方阵 MIMO，但维度为奇数，跳过“MIMO双向测试”选项。\n');
+    return;
+end
+
+enabled = askNumeric('是否开启 MIMO双向测试（非对角块所有 taps 置0）？(1/0, 默认0): ', 0);
+if enabled ~= 1
+    enabled = 0;
+    return;
+end
+
+fprintf('已开启 MIMO双向测试：将非对角块子信道的 delay/real/imag 全部置0。\n');
+halfIn = IN_num / 2;
+halfOut = OUT_num / 2;
+
+for m = 1:IN_num
+    for n = 1:OUT_num
+        inBlock = 1 + (m > halfIn);
+        outBlock = 1 + (n > halfOut);
+        if inBlock ~= outBlock
+            ch = mapChannelIndex(m, n, OUT_num);
+            H = zeroChannelTriplets(H, ch);
+        end
+    end
+end
+end
+
 function [ircWords, irdWords] = buildWords(qReal, qImag, delayClocks, IN_num, OUT_num, T_num, T1_num)
 % buildWords
 % 按文档伪代码顺序，构建 .irc/.ird 的 32-bit 字流。
@@ -543,7 +583,7 @@ end
 function writeIrcDebugDecimal(pathName, words)
 % writeIrcDebugDecimal
 % .irc 手工检查辅助文件：
-%   每个 32-bit 字拆成 2 个 int16 十进制数（real, imag），
+%   每个 32-bit 字按 .irc 显示顺序拆成 2 个 int16 十进制数（imag, real），
 %   每行对应 4 个 32-bit 字，因此每行输出 8 个十进制数。
 fid = fopen(pathName, 'w', 'n', 'UTF-8');
 if fid < 0
@@ -606,7 +646,8 @@ cases = {
     makeValidationCaseDelayDelta(), ...
     makeValidationCasePadding(), ...
     makeValidationCaseChannelCoverage(), ...
-    makeValidationCaseQuantBoundary()};
+    makeValidationCaseQuantBoundary(), ...
+    makeValidationCaseCustomBidiInteractive()};
 
 outFiles = cell(numel(cases), 1);
 for i = 1:numel(cases)
@@ -780,6 +821,37 @@ data = wrapValidationCase( ...
     {'覆盖接近 int16 上下限的值'; '覆盖超范围后的饱和'; '覆盖接近 0 和 .5 的舍入行为'});
 end
 
+function data = makeValidationCaseCustomBidiInteractive()
+% 自定义双向结构样例:
+%   - 所有非对角线子信道默认全0
+%   - 对角线子信道仅第1个tap为(delay=0, real=1, imag=0)
+IN_num = max(1, round(askNumeric('自定义样例 IN_num (默认4): ', 4)));
+OUT_num = max(1, round(askNumeric('自定义样例 OUT_num (默认4): ', 4)));
+T_num = max(1, round(askNumeric('自定义样例 T_num (默认1): ', 1)));
+Nsamples = max(1, round(askNumeric('自定义样例 Nsample (默认2): ', 2)));
+cir_up_rate = 1e6;
+H = zeros(Nsamples, T_num * 3, IN_num * OUT_num);
+
+for s = 1:Nsamples
+    for m = 1:IN_num
+        for n = 1:OUT_num
+            if m == n
+                ch = mapChannelIndex(m, n, OUT_num);
+                H = setTapTriplet(H, s, 1, ch, 0, 1, 0);
+            end
+        end
+    end
+end
+
+data = wrapValidationCase( ...
+    'validation_custom_bidi.mat', H, IN_num, OUT_num, cir_up_rate, ...
+    '自定义双向结构样例', ...
+    {'运行时可输入 IN_num/OUT_num/T_num/Nsample'; ...
+     '非对角线子信道默认全0'; ...
+     '对角线子信道仅第1个tap为 delay=0, real=1, imag=0'; ...
+     '用于生成结构清晰、便于人工检查的样例'});
+end
+
 function data = wrapValidationCase(fileName, H, IN_num, OUT_num, cir_up_rate, target, checkpoints)
 validation_info = struct();
 validation_info.target = target;
@@ -801,6 +873,17 @@ baseIdx = (tapIdx - 1) * 3;
 H(sampleIdx, baseIdx + 1, channelIdx) = delayValue;
 H(sampleIdx, baseIdx + 2, channelIdx) = realValue;
 H(sampleIdx, baseIdx + 3, channelIdx) = imagValue;
+end
+
+function H = zeroChannelTriplets(H, channelIdx)
+if ismatrix(H)
+    if channelIdx ~= 1
+        error('2D H 仅支持单通道，channelIdx 必须为1。');
+    end
+    H(:,:) = 0;
+else
+    H(:,:,channelIdx) = 0;
+end
 end
 
 function ch = mapChannelIndex(inIdx, outIdx, OUT_num)
