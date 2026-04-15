@@ -8,7 +8,7 @@
 ## 预期输入
 * 能够询问.mat文件的位置，load 信道系数（浮点）数据到matlab 的 workspace；
 * 输入是load一个*.mat文件，文件主要数据是信道系数H, 格式为 delay0 re0 im0 delay1 Re1 Im1 delay2 re2 im2 delay3 Re3 Im3 ...；首先检查信道系数H的几个维度 Nsamples × （T_num×3） × （IN_num × OUT_num）
-* IN_num是输入数据通道的数量，OUT_num是输出数据通道的数量，当IN_num = OUT_num = 时，2×2=4 共四个信道(channel)；如果只有Nsamples × （T_num×3）两个维度，说明IN_num=OUT_num=1；
+* IN_num是输入数据通道的数量，OUT_num是输出数据通道的数量，共(OUT_num*IN_num)个信道(channel)；如果只有Nsamples × （T_num×3）两个维度，说明IN_num=OUT_num=1；
 * T_num 是每个信道的多径数量，对应TDL模型滤波器的抽头个数，每个tap包括了 相对时延（delay）；信道系数实数部分；信道系数虚数部分；相对时延的单位是：ns;
 * 除此以外，CIR update rate等相关参数也需要load到workspace备用。
 
@@ -19,6 +19,11 @@
 * 能够选择是否需要进行信道归一化操作；
 * 定点化需符合“信道系数定点化”要求；
 * irc 和 ird 文件保存格式需要满足“irc 和 ird 文件保存格式”要求。
+* 增加“MIMO双向测试”要求：仅当偶数维MIMO时（ `IN_num` 和 `OUT_num`均为偶数），处理前需要询问用户是否需要打开此操作；该要求适用于所有 `IN_num`、`OUT_num` 均为偶数的场景，不要求 `IN_num = OUT_num`。
+* 若打开“MIMO双向测试”，则按 `ch = (m − 1) · OUT_num + n` 组成的 `IN_num × OUT_num` 信道矩阵进行处理，并按输入维、输出维各自均分为 [1:IN_num/2,1:OUT_num/2], [1:IN_num/2,OUT_num/2+1:OUT_num], [IN_num/2+1:IN_num,1:OUT_num/2], [IN_num/2+1:IN_num,OUT_num/2+1:OUT_num] 四个子矩阵。
+* 对角块固定指左上块和右下块；非对角块固定指右上块和左下块。
+* 对所有非对角块（off-diagonal blocks）位置对应的信道，保持原有 `T_num` 不变，但将该信道所有 taps 的 `delay / real / imag` 全部改为 0；对角块保持原值。
+* 经此操作后的所有输出文件（含浮点 `H`、定点 `Hq`、`.irc`、`.ird`）都应基于非对角块赋0后的结果；输出 MAT 中的 `H` 也应覆盖为处理后的版本。
 
 ## 预期输出要求
 * 能够计算并展示量化误差，误差容忍度：< $10^{-4}$；
@@ -76,17 +81,23 @@ fclose(delay_coff_file);
 * 单个验证样例不要求覆盖所有场景；验证样例集整体应覆盖基础维度组织、时延变化量、4个32比特对齐补零、子信道完整性、定点化边界行为等关键要求。
 
 ## 验证样例集要求
-* 程序应至少生成以下5个验证性的*.mat文件：
+* 程序应至少生成以下6个验证性的*.mat文件：
 * 1. 基础可读性样例：用于验证 H 的维度组织、IN_num/OUT_num/T_num 的映射关系，以及 delay/real/imag 是否便于人工区分。建议使用 T_num = 24，IN_num = 4，OUT_num = 4。
 * 2. 时延变化量样例：用于验证“.ird中当前时刻的时延相对于前一刻时延的变化量”是否计算正确。样例中必须同时包含时延增大、时延减小、时延不变三种情况，以检查 BIT[31] 和 BIT[30:0] 的编码逻辑。
 * 3. 补零对齐样例：用于验证当 T_num 不是4的整数倍时，能够按照 T1_num = ceil(T_num/4)*4 补齐，并补 TZnum 个32比特的0；同时检查 .irc 和 .ird 每4个32bit字换行的格式要求。
 * 4. 子信道完整性样例：用于验证所有 (in_num, out_num) 子信道均被完整写出，不能遗漏偶数或奇数 out_num 的子信道；该检查同时适用于 .ird 和 .irc。
 * 5. 定点边界样例：用于验证 fi 定点化时的舍入、饱和、正负值边界行为，确保 Hq、.irc 与预期一致。
+* 6. 自定义样例1：运行脚本时通过命令行提示输入 `IN_num / OUT_num / T_num / Nsample`，默认参数分别为 `4 / 4 / 1 / 2`；该样例允许任意正整数 `IN_num / OUT_num`，不依赖 `2 × 2` block 划分。
+* 当 `IN_num = OUT_num` 时，自定义样例文件名为 `validation_custom_bidi.mat`；所有非对角线子信道默认全0；所有对角线（`ch = (m − 1) · OUT_num + n`，且 `m = n`）上的子信道仅配置 1 个 tap，其取值固定为 `delay = 0`、`real = 1`、`imag = 0`。
+* 当 `IN_num != OUT_num` 时，需要额外询问该样例用于验证“MIMO单向信道”还是“MIMO双向信道”：
+* 若选择“MIMO单向信道”，则输出文件名为 `validation_custom_uni.mat`；对角线定义为所有满足 `m = n` 且 `1 <= m <= min(IN_num, OUT_num)` 的子信道，这些子信道仅配置 1 个 tap，其取值固定为 `delay = 0`、`real = 1`、`imag = 0`；其余子信道全0。
+* 若选择“MIMO双向信道”，则输出文件名为 `validation_custom_bidi.mat`；需要生成 `(IN_num + OUT_num) × (IN_num + OUT_num)` 的大矩阵，并在 `m = n` 的位置配置 1 个 tap，其取值固定为 `delay = 0`、`real = 1`、`imag = 0`；其余子信道全0。
+* 自定义样例中的“单向/双向”询问仅用于验证样例生成，不影响主脚本处理真实 `H` 时的“MIMO双向测试”逻辑。
 
 ## 验证样例设计要求
 * 各验证样例中的 delay、real、imag 应尽量采用人工容易分辨的编码方式，能够快速看出属于哪个 sample、哪个 in_num、哪个 out_num、哪个 tap。
 * 不同验证样例应突出不同验证目标，避免所有样例都使用同一种单调递增设计，导致边界或异常场景无法被覆盖。
-* 输出的验证样例文件名应能直接体现用途，例如：`validation_basic.mat`、`validation_delay_delta.mat`、`validation_padding.mat`、`validation_channel_coverage.mat`、`validation_quant_boundary.mat`。
+* 输出的验证样例文件名应能直接体现用途，例如：`validation_basic.mat`、`validation_delay_delta.mat`、`validation_padding.mat`、`validation_channel_coverage.mat`、`validation_quant_boundary.mat`、`validation_custom_uni.mat`、`validation_custom_bidi.mat`。
 * 对每个验证性*.mat文件，程序或 README 中应说明该文件主要验证的目标、关键观察点以及预期现象。
 * 验证性*.mat文件不仅要支持人工检查输入 H，还应支持人工检查输出 Hq、`.irc`、`.ird` 之间的一致性。
 
@@ -116,6 +127,7 @@ fclose(delay_coff_file);
 * 在验证样例生成逻辑中，加入接近定点上下限、超范围、小数舍入等数值，用于验证 fi 的舍入和饱和行为。
 * 更新 README.md，列出每个验证样例文件的用途、建议检查项和对应预期现象。
 * 如有必要，扩展现有校验脚本，使其能针对多个验证样例执行一致性检查，而不是仅面向单个样例文件。
+* 校验脚本需要覆盖“MIMO双向测试”打开后的输出结果，能够检查非对角块清零后的 `H / Hq / .irc / .ird` 是否一致。
 
 
 
