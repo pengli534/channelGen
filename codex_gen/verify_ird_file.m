@@ -44,7 +44,7 @@ else
 end
 
 if ~isempty(H)
-    if ~isnumeric(H) || ~(ndims(H)==2 || ndims(H)==3)
+    if ~isnumeric(H) || ~(ismatrix(H) || ndims(H)==3)
         error('H/Hq 必须是2D或3D数值数组。');
     end
 
@@ -56,7 +56,7 @@ if ~isempty(H)
     T_num = packedCols/3;
     T1_num = ceil(T_num/4)*4;
 
-    if ndims(H)==2
+    if ismatrix(H)
         Nchannel = 1;
     else
         Nchannel = size(H,3);
@@ -206,7 +206,7 @@ end
 end
 
 function X = extractTriplet(H,pos)
-if ndims(H)==2
+if ismatrix(H)
     X = zeros(size(H,1), size(H,2)/3, 1);
     X(:,:,1)=H(:,pos:3:end);
 else

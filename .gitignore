@@ -1,4 +1,5 @@
 output/
+validation_mats/
 *.mat
 *.irc
 *.ird
