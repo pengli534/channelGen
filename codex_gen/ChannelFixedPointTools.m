@@ -109,8 +109,8 @@ end
 % IN/OUT 优先从 MAT 的元数据读取，否则按通道数推断
 [IN_num, OUT_num] = inferInOut(src, Nchannel);
 
-% 可选: 对偶数维方阵 MIMO 执行“双向测试”预处理
-[H, mimoBidiEnabled] = maybeApplyMimoBidiTest(H, IN_num, OUT_num);
+% 可选: 执行“双向信道测试并置零”预处理
+[H, bidiInfo] = maybeApplyBidiZeroing(H, IN_num, OUT_num);
 
 % 从三元组中提取各分量
 % H_delay/H_real/H_imag 统一输出成 3D: [Nsamples, T_num, Nchannel]
@@ -276,8 +276,11 @@ meta.delay_unit = delayUnitText;
 meta.fpga_clock_hz = fpgaClock;
 meta.max_abs_error = maxErr;
 meta.mean_abs_error = meanErr;
-meta.mimo_bidi_enabled = mimoBidiEnabled;
-meta.mimo_bidi_supported = double(IN_num == OUT_num && mod(IN_num, 2) == 0);
+meta.mimo_bidi_enabled = bidiInfo.enabled;
+meta.mimo_bidi_supported = bidiInfo.supported;
+meta.mimo_bidi_dl_num = bidiInfo.DL_num;
+meta.mimo_bidi_ul_num = bidiInfo.UL_num;
+meta.mimo_bidi_name = '双向信道测试并置零';
 meta.manual_debug_irc_decimal = outIrcDebug;
 meta.manual_debug_ird_decimal = outIrdDebug;
 
@@ -420,34 +423,58 @@ else
 end
 end
 
-function [H, enabled] = maybeApplyMimoBidiTest(H, IN_num, OUT_num)
-% maybeApplyMimoBidiTest
-% 仅当 IN_num == OUT_num 时显示选项；仅偶数维方阵 MIMO 支持该操作。
-enabled = 0;
+function [H, info] = maybeApplyBidiZeroing(H, IN_num, OUT_num)
+% maybeApplyBidiZeroing
+% 按 codex.md 的“双向信道测试并置零”需求处理:
+%   - 仅当 IN_num == OUT_num 且维度 >= 2 时可开启
+%   - 用户输入 DL_num/UL_num，满足 IN=OUT=DL+UL
+%   - 保留 DL发送->DL接收、UL发送->UL接收 两个通信块，其余子信道置零
+info = struct('enabled', 0, 'supported', 0, 'DL_num', 0, 'UL_num', 0);
+
 if IN_num ~= OUT_num
     return;
 end
 
-if mod(IN_num, 2) ~= 0
-    fprintf('检测到方阵 MIMO，但维度为奇数，跳过“MIMO双向测试”选项。\n');
+if IN_num < 2
+    fprintf('检测到 IN_num = OUT_num 但维度小于2，跳过“双向信道测试并置零”。\n');
     return;
 end
 
-enabled = askNumeric('是否开启 MIMO双向测试（非对角块所有 taps 置0）？(1/0, 默认0): ', 0);
+info.supported = 1;
+enabled = askNumeric('是否开启双向信道测试并置零（非保留块所有 taps 置0）？(1/0, 默认0): ', 0);
 if enabled ~= 1
-    enabled = 0;
     return;
 end
 
-fprintf('已开启 MIMO双向测试：将非对角块子信道的 delay/real/imag 全部置0。\n');
-halfIn = IN_num / 2;
-halfOut = OUT_num / 2;
+defaultDL = floor(IN_num / 2);
+defaultUL = IN_num - defaultDL;
+while true
+    DL_num = max(0, round(askNumeric(sprintf('请输入 DL_num（正整数，默认%d）: ', defaultDL), defaultDL)));
+    UL_num = max(0, round(askNumeric(sprintf('请输入 UL_num（正整数，默认%d）: ', defaultUL), defaultUL)));
+    if DL_num > 0 && UL_num > 0 && (DL_num + UL_num == IN_num)
+        break;
+    end
+    retry = askNumeric(sprintf('DL_num + UL_num 必须等于 IN_num = OUT_num = %d，且二者均为正整数。重新输入？(1/0, 默认1): ', IN_num), 1);
+    if retry ~= 1
+        fprintf('未获得有效 DL_num/UL_num，跳过“双向信道测试并置零”。\n');
+        return;
+    end
+end
+
+info.enabled = 1;
+info.DL_num = DL_num;
+info.UL_num = UL_num;
+
+fprintf('已开启双向信道测试并置零：DL_num=%d, UL_num=%d。\n', DL_num, UL_num);
+fprintf('保留块: row 1~%d, column 1~%d；row %d~%d, column %d~%d。\n', ...
+    DL_num, UL_num, DL_num + 1, DL_num + UL_num, UL_num + 1, UL_num + DL_num);
 
 for m = 1:IN_num
     for n = 1:OUT_num
-        inBlock = 1 + (m > halfIn);
-        outBlock = 1 + (n > halfOut);
-        if inBlock ~= outBlock
+        keepBlock1 = (m >= 1 && m <= DL_num && n >= 1 && n <= UL_num);
+        keepBlock2 = (m >= DL_num + 1 && m <= DL_num + UL_num && ...
+            n >= UL_num + 1 && n <= UL_num + DL_num);
+        if ~(keepBlock1 || keepBlock2)
             ch = mapChannelIndex(m, n, OUT_num);
             H = zeroChannelTriplets(H, ch);
         end
@@ -822,14 +849,49 @@ data = wrapValidationCase( ...
 end
 
 function data = makeValidationCaseCustomBidiInteractive()
-% 自定义双向结构样例:
-%   - 所有非对角线子信道默认全0
-%   - 对角线子信道仅第1个tap为(delay=0, real=1, imag=0)
+% 自定义结构样例:
+%   - IN_num == OUT_num: 生成 validation_custom_bidi.mat
+%   - IN_num ~= OUT_num: 询问生成 MIMO 单向或 MIMO 双向大矩阵样例
+%   - 对角线子信道仅第1个tap为(delay=0, real=1, imag=0)，其余全0
 IN_num = max(1, round(askNumeric('自定义样例 IN_num (默认4): ', 4)));
 OUT_num = max(1, round(askNumeric('自定义样例 OUT_num (默认4): ', 4)));
 T_num = max(1, round(askNumeric('自定义样例 T_num (默认1): ', 1)));
 Nsamples = max(1, round(askNumeric('自定义样例 Nsample (默认2): ', 2)));
 cir_up_rate = 1e6;
+
+if IN_num == OUT_num
+    data = makeDiagonalValidationCase( ...
+        'validation_custom_bidi.mat', IN_num, OUT_num, T_num, Nsamples, cir_up_rate, ...
+        '自定义双向结构样例', ...
+        {'运行时可输入 IN_num/OUT_num/T_num/Nsample'; ...
+         '所有非对角线子信道默认全0'; ...
+         '所有满足 m=n 的对角线子信道仅第1个tap为 delay=0, real=1, imag=0'; ...
+         '用于生成结构清晰、便于人工检查的方阵样例'});
+    return;
+end
+
+mode = askNumeric('自定义样例 IN_num != OUT_num：MIMO单向(1) / MIMO双向大矩阵(2)，默认1: ', 1);
+if mode == 2
+    bigN = IN_num + OUT_num;
+    data = makeDiagonalValidationCase( ...
+        'validation_custom_bidi.mat', bigN, bigN, T_num, Nsamples, cir_up_rate, ...
+        '自定义 MIMO 双向大矩阵样例', ...
+        {'用户输入 IN_num/OUT_num 后生成 (IN_num+OUT_num) x (IN_num+OUT_num) 大矩阵'; ...
+         '所有非对角线子信道默认全0'; ...
+         '所有满足 m=n 的对角线子信道仅第1个tap为 delay=0, real=1, imag=0'; ...
+         '该样例仅用于验证样例生成，不影响真实 H 的双向信道测试并置零逻辑'});
+else
+    data = makeDiagonalValidationCase( ...
+        'validation_custom_uni.mat', IN_num, OUT_num, T_num, Nsamples, cir_up_rate, ...
+        '自定义 MIMO 单向结构样例', ...
+        {'运行时可输入 IN_num/OUT_num/T_num/Nsample'; ...
+         '对角线定义为 m=n 且 1<=m<=min(IN_num,OUT_num) 的子信道'; ...
+         '对角线子信道仅第1个tap为 delay=0, real=1, imag=0'; ...
+         '其余子信道全0'});
+end
+end
+
+function data = makeDiagonalValidationCase(fileName, IN_num, OUT_num, T_num, Nsamples, cir_up_rate, target, checkpoints)
 H = zeros(Nsamples, T_num * 3, IN_num * OUT_num);
 
 for s = 1:Nsamples
@@ -844,12 +906,7 @@ for s = 1:Nsamples
 end
 
 data = wrapValidationCase( ...
-    'validation_custom_bidi.mat', H, IN_num, OUT_num, cir_up_rate, ...
-    '自定义双向结构样例', ...
-    {'运行时可输入 IN_num/OUT_num/T_num/Nsample'; ...
-     '非对角线子信道默认全0'; ...
-     '对角线子信道仅第1个tap为 delay=0, real=1, imag=0'; ...
-     '用于生成结构清晰、便于人工检查的样例'});
+    fileName, H, IN_num, OUT_num, cir_up_rate, target, checkpoints);
 end
 
 function data = wrapValidationCase(fileName, H, IN_num, OUT_num, cir_up_rate, target, checkpoints)

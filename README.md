@@ -142,6 +142,7 @@ results = ChannelFixedPointTools();
 - `validation_padding.mat`
 - `validation_channel_coverage.mat`
 - `validation_quant_boundary.mat`
+- `validation_custom_uni.mat` / `validation_custom_bidi.mat`
 
 这些样例分别用于覆盖：
 
@@ -150,6 +151,7 @@ results = ChannelFixedPointTools();
 - 非 4 对齐 tap 的补零行为
 - 子信道完整写出
 - 定点边界、舍入与饱和
+- 自定义 MIMO 单向/双向结构
 
 ## 校验方式
 

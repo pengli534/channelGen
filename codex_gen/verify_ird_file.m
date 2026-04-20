@@ -129,7 +129,7 @@ fprintf('IRD: %s\n', irdFile);
 fprintf('Nsamples=%d, T_num=%d, T1_num=%d, IN=%d, OUT=%d, channels=%d\n', ...
     Nsamples, T_num, T1_num, IN_num, OUT_num, Nchannel);
 if isfield(src, 'meta') && isstruct(src.meta) && isfield(src.meta, 'mimo_bidi_enabled')
-    fprintf('MIMO双向测试: %d\n', double(src.meta.mimo_bidi_enabled));
+    fprintf('双向信道测试并置零: %d\n', double(src.meta.mimo_bidi_enabled));
 end
 
 % 3) 从 H 生成期望字流
@@ -163,23 +163,28 @@ fprintf('\n===== IRD 校验结果 =====\n');
 printCmp(rIrdSame, rIrdDiff, rIrdIdx, rIrdGot, rIrdExp, numel(gotIrd), numel(expIrd));
 
 mimoBidiReport = struct('enabled', false, 'supported', false, 'H_same', true, ...
-    'Hq_same', true, 'H_nonzero_count', 0, 'Hq_nonzero_count', 0);
+    'Hq_same', true, 'H_nonzero_count', 0, 'Hq_nonzero_count', 0, ...
+    'DL_num', 0, 'UL_num', 0);
 if isfield(src, 'meta') && isstruct(src.meta) && isfield(src.meta, 'mimo_bidi_enabled') ...
         && double(src.meta.mimo_bidi_enabled) == 1
     mimoBidiReport.enabled = true;
-    mimoBidiReport.supported = (IN_num == OUT_num && mod(IN_num, 2) == 0);
+    [DL_num, UL_num] = readBidiDlUl(src.meta, IN_num);
+    mimoBidiReport.DL_num = DL_num;
+    mimoBidiReport.UL_num = UL_num;
+    mimoBidiReport.supported = (IN_num == OUT_num && IN_num >= 2 && ...
+        DL_num > 0 && UL_num > 0 && DL_num + UL_num == IN_num);
     if ~isempty(H_float)
         [mimoBidiReport.H_same, mimoBidiReport.H_nonzero_count] = ...
-            checkMimoBidiZeroed(H_float, IN_num, OUT_num);
+            checkMimoBidiZeroed(H_float, IN_num, OUT_num, DL_num, UL_num);
     end
     if ~isempty(H_quantized)
         [mimoBidiReport.Hq_same, mimoBidiReport.Hq_nonzero_count] = ...
-            checkMimoBidiZeroed(H_quantized, IN_num, OUT_num);
+            checkMimoBidiZeroed(H_quantized, IN_num, OUT_num, DL_num, UL_num);
     end
 
-    fprintf('\n===== MIMO双向测试校验 =====\n');
-    fprintf('supported=%d, H_same=%d, H_nonzero_count=%d, Hq_same=%d, Hq_nonzero_count=%d\n', ...
-        mimoBidiReport.supported, mimoBidiReport.H_same, mimoBidiReport.H_nonzero_count, ...
+    fprintf('\n===== 双向信道测试并置零校验 =====\n');
+    fprintf('supported=%d, DL_num=%d, UL_num=%d, H_same=%d, H_nonzero_count=%d, Hq_same=%d, Hq_nonzero_count=%d\n', ...
+        mimoBidiReport.supported, DL_num, UL_num, mimoBidiReport.H_same, mimoBidiReport.H_nonzero_count, ...
         mimoBidiReport.Hq_same, mimoBidiReport.Hq_nonzero_count);
 end
 
@@ -444,10 +449,27 @@ if ~same
 end
 end
 
-function [same, nonzeroCount] = checkMimoBidiZeroed(H, IN_num, OUT_num)
-same = true;
+function [DL_num, UL_num] = readBidiDlUl(meta, IN_num)
+DL_num = readScalar(meta, {'mimo_bidi_dl_num','DL_num'}, NaN);
+UL_num = readScalar(meta, {'mimo_bidi_ul_num','UL_num'}, NaN);
+if isnan(DL_num) || isnan(UL_num)
+    % 兼容旧输出：旧版本仅支持偶数维二等分。
+    if mod(IN_num, 2) == 0
+        DL_num = IN_num / 2;
+        UL_num = IN_num / 2;
+    else
+        DL_num = 0;
+        UL_num = 0;
+    end
+end
+DL_num = round(DL_num);
+UL_num = round(UL_num);
+end
+
+function [same, nonzeroCount] = checkMimoBidiZeroed(H, IN_num, OUT_num, DL_num, UL_num)
 nonzeroCount = 0;
-if isempty(H) || ~(IN_num == OUT_num && mod(IN_num, 2) == 0)
+if isempty(H) || ~(IN_num == OUT_num && IN_num >= 2 && ...
+        DL_num > 0 && UL_num > 0 && DL_num + UL_num == IN_num)
     same = false;
     return;
 end
@@ -455,14 +477,13 @@ end
 H_delay = extractTriplet(H, 1);
 H_real = extractTriplet(H, 2);
 H_imag = extractTriplet(H, 3);
-halfIn = IN_num / 2;
-halfOut = OUT_num / 2;
 
 for m = 1:IN_num
     for n = 1:OUT_num
-        inBlock = 1 + (m > halfIn);
-        outBlock = 1 + (n > halfOut);
-        if inBlock ~= outBlock
+        keepBlock1 = (m >= 1 && m <= DL_num && n >= 1 && n <= UL_num);
+        keepBlock2 = (m >= DL_num + 1 && m <= DL_num + UL_num && ...
+            n >= UL_num + 1 && n <= UL_num + DL_num);
+        if ~(keepBlock1 || keepBlock2)
             ch = (m - 1) * OUT_num + n;
             nz = nnz(H_delay(:,:,ch) ~= 0) + nnz(H_real(:,:,ch) ~= 0) + nnz(H_imag(:,:,ch) ~= 0);
             nonzeroCount = nonzeroCount + nz;

@@ -3,27 +3,23 @@
 
 # 要求
 
-编辑MATALB代码，支持fixed point toolbox
+编辑MATLAB代码，支持 Fixed-Point Designer
 
 ## 预期输入
 * 能够询问.mat文件的位置，load 信道系数（浮点）数据到matlab 的 workspace；
 * 输入是load一个*.mat文件，文件主要数据是信道系数H, 格式为 delay0 re0 im0 delay1 Re1 Im1 delay2 re2 im2 delay3 Re3 Im3 ...；首先检查信道系数H的几个维度 Nsamples × （T_num×3） × （IN_num × OUT_num）
 * IN_num是输入数据通道的数量，OUT_num是输出数据通道的数量，共(OUT_num*IN_num)个信道(channel)；如果只有Nsamples × （T_num×3）两个维度，说明IN_num=OUT_num=1；
-* T_num 是每个信道的多径数量，对应TDL模型滤波器的抽头个数，每个tap包括了 相对时延（delay）；信道系数实数部分；信道系数虚数部分；相对时延的单位是：ns;
-* 除此以外，CIR update rate等相关参数也需要load到workspace备用。
+* T_num 是每个信道的多径数量，对应TDL模型滤波器的抽头个数，每个tap包括了：1.相对时延（delay，相对时延的单位是ns）；2.信道系数实数部分；3.信道系数虚数部分。
+* 除此以外，信道刷新频率（CIR update rate）等相关参数也需要load到workspace备用。
 
 ## 处理过程要求
-* 代码需要能够分析TDL多径信道系数的数据，包括但不限于 tap点的数量、tap之间的相对时延、以及实数部分和虚数部分的值，评估包括但不限于信道平均功率参数，model gain等（如果写的不准确可补充或更正），并打印分析结果；
-* 能够根据 CIR update rate（信道刷新率）分析与信道仿真相关的参数：包括但不限于Nsamples对应的仿真时长，多普勒扩展等指标（如果写的不准确可补充或更正）；
+* 代码需要能够分析TDL多径信道系数的数据，包括但不限于 tap点的数量、tap之间的相对时延、以及实数部分和虚数部分的值，评估包括但不限于信道平均功率参数，model gain等，并打印分析结果；
+* 能够根据 信道刷新频率（CIR update rate）分析与信道仿真相关的参数，包括但不限于Nsamples对应的仿真时长，多普勒扩展等指标；
 * 使用matlab的fi实现定点化，完成信道系数的定点化操作，信道系数位宽为16bit有符号整数，需要打印显示定点方式；
 * 能够选择是否需要进行信道归一化操作；
 * 定点化需符合“信道系数定点化”要求；
-* irc 和 ird 文件保存格式需要满足“irc 和 ird 文件保存格式”要求。
-* 增加“MIMO双向测试”要求：仅当偶数维MIMO时（ `IN_num` 和 `OUT_num`均为偶数），处理前需要询问用户是否需要打开此操作；该要求适用于所有 `IN_num`、`OUT_num` 均为偶数的场景，不要求 `IN_num = OUT_num`。
-* 若打开“MIMO双向测试”，则按 `ch = (m − 1) · OUT_num + n` 组成的 `IN_num × OUT_num` 信道矩阵进行处理，并按输入维、输出维各自均分为 [1:IN_num/2,1:OUT_num/2], [1:IN_num/2,OUT_num/2+1:OUT_num], [IN_num/2+1:IN_num,1:OUT_num/2], [IN_num/2+1:IN_num,OUT_num/2+1:OUT_num] 四个子矩阵。
-* 对角块固定指左上块和右下块；非对角块固定指右上块和左下块。
-* 对所有非对角块（off-diagonal blocks）位置对应的信道，保持原有 `T_num` 不变，但将该信道所有 taps 的 `delay / real / imag` 全部改为 0；对角块保持原值。
-* 经此操作后的所有输出文件（含浮点 `H`、定点 `Hq`、`.irc`、`.ird`）都应基于非对角块赋0后的结果；输出 MAT 中的 `H` 也应覆盖为处理后的版本。
+* irc 和 ird 文件保存格式需要满足“irc 和 ird 文件保存格式”要求；
+* 满足“双向信道测试并置零”要求；
 
 ## 预期输出要求
 * 能够计算并展示量化误差，误差容忍度：< $10^{-4}$；
@@ -33,8 +29,8 @@
 
 # 处理方法
 ## 信道系数定点化
-* 信道系数的实部和虚部均为有符号16位整数，其中符号占1位，因此有符号16位整数的取值范围为：-32768 ~ 32768，归一化公式为：Q = round（x/{IQ_max}*(2^15-1)）
-* 例如，{IQ_max}=54.7时，当x=-54.7时，Q=-32768；当x=0时，Q=0；当x=54.7时，Q=54.7时，Q=32767。
+* 信道系数的实部和虚部均为有符号16位整数，其中符号占1位，因此有符号16位整数的取值范围为：-32768 ~ 32767，归一化公式为：Q = round（x/{IQ_max}*(2^15-1)）
+* 例如，{IQ_max}=54.7时，当x=-54.7时，Q=-32767；当x=0时，Q=0；当x=54.7时，Q=32767。
 * 再例如，{IQ_max}=3.5时，当x=3.0时，Q=28086；当x=-1.5时，Q=-14043
 
 ## irc 和 ird 文件保存格式
@@ -44,36 +40,35 @@
 * 时延系数delay：BIT[30:0]：相对时延对应的FPGA系统时钟个数，即当前时刻的时延相对于前一刻时延的变化量。BIT[31]为0时，表示滑动时延增大；BIT[31]为1时，表示滑动时延减小；“FPGA系统时钟个数”需要通过相对时延和采样周期计算获得。
 * irc 和 ird 的格式是 tap0[31:0]tap1 [31:0] ... tap23[31:0]，应连续写，不要每个tap换1行。但是每一行写满4个tap以后就要换行，来保证4个32比特对齐的要求。
 
+## 双向信道测试并置零
+* 读取 `.mat` 文件并确定 `IN_num / OUT_num` 后，先判断是否满足 `IN_num = OUT_num`。如果满足，应询问用户是否需要完成“双向信道测试并置零”的操作；如果 `IN_num != OUT_num`，或者用户不需要“双向信道测试并置零”，则跳过置零处理。
+* 如果用户需要“双向信道测试并置零”，则继续询问 `DL_num` 和 `UL_num`。这两个值必须满足 `IN_num = OUT_num = DL_num + UL_num`，并且 `DL_num`、`UL_num` 都必须是正整数；如果不满足，应提示用户重新输入或停止该处理。若 IN_num = OUT_num 但维度小于 2，则不支持该处理并跳过。
+
+* 双向信道测试中的通道排序约定如下：
+  * 输入维 row 分为两个发送端口组：前 `DL_num` 个为 DL 发送组，后 `UL_num` 个为 UL 发送组；
+  * 输出维 column 分为两个接收端口组：前 `UL_num` 个为 DL 接收组，后 `DL_num` 个为 UL 接收组。
+
+* 对 `ch = (m − 1) · OUT_num + n` 组成的 `IN_num × OUT_num` 信道矩阵进行置零处理，其中 `m` 是输入维 row，`n` 是输出维 column，`ch` 是 `H(:,:,ch)` 对应的子信道编号。
+
+* 仅保留以下两个双向通信块的原始值：
+
+     block1：   row:1~DL_num，column:1~UL_num;
+     block2：   row:(DL_num+1)~(DL_num+UL_num)，column:(UL_num+1)~(UL_num+DL_num);
+
+* 除上述两个保留块外，其他所有 `(m,n)` 子信道均置零。置零时保持原有 `Nsamples / T_num / IN_num / OUT_num` 维度不变，但将该子信道所有 sample、所有 taps 的 `delay / real / imag` 全部改为 0。
+
+* 经此操作后的所有输出文件（含浮点 `H`、定点 `Hq`、`.irc`、`.ird`）都应基于置零后的结果；输出 MAT 中的 `H` 也应覆盖为处理后的版本。
+
 
 # 背景
 * 用于信道仿真器的FPGA逻辑设计测试，以及后期的应用软件开发；
 * 工程背景：（1）信道仿真器研制；（2）信道仿真器中的FPGA逻辑正确性验证；（3）FPGA用于完成信道系数（定点化后的）与信号（定点化后的）的卷积计算，需要验证计算过程中的逻辑正确性以及定点化选择；
 * 本代码仅用于生成定点化后的信道系数,并存为.mat文件提供后续仿真工作；
 
-* 输入：信道的浮点系数CIR系数列表，已经用其他软件生成并保存为.mat格式（请分析附件.mat），随着taps数量增加，数据量增加，每条路径都含 delay image real 三组浮点数；
+* 输入：信道的浮点系数CIR系数列表，已经用其他软件生成并保存为.mat格式（请分析附件.mat），随着taps数量增加，数据量增加，每条路径都含 delay real imag 三组浮点数；
 * Xilinx Ultrascale+ VU13P 系列FPGA 时钟频率 245.76e6Hz
 * 信道刷新率 CIR update rate 最高不超过6e6Hz 对应的多普勒扩展为±1.5e6Hz
 * 需要load的.mat 所在的位置 C:\Users\pengl\Documents\CloudStation\捷希科技\信道模拟器\fixedpoints\channelGen\tap_to_asc_matlab\cir_mat_file，可以多检查几组.mat中的H作为软件通用性的测试。
-
-* irc 和 ird 文件保存格式伪代码
-fopen(filter_coff_file)；
-fopen(delay_coff_file)；
-filter_coff_file_offset_=0;
-delay_coff_file_offset_=0;
-for(m=0; m++; m<INnum)
-for(n=0; n++; n<OUTnum)
-for(x=0; x++; x<T1num)
-fwrite(filter_coff_file ,filter_coff_file_offset ,CF[m,n,x]);//CF是滤波器系数
-filter_coff_file_offset = filter_coff_file_offset +4;	 //+4，一个系数占用4字节 
-if(mod(n,2)==0)
-fwrite (delay_coff_file ,delay_coff_file_offset ,CD[m,n,x]);//CD是时延系数
-delay_coff_file_offset= delay_coff_file_offset+4; //+4，一个系数占用4字节
-end
-end
-end
-end
-fclose(filter_coff_file);
-fclose(delay_coff_file);
 
 # 正确性验证
 * “衰落模块交互接口.docx”中“二、信道模型文件格式说明”中的伪代码可用于参考并生成测试用例。
@@ -87,12 +82,12 @@ fclose(delay_coff_file);
 * 3. 补零对齐样例：用于验证当 T_num 不是4的整数倍时，能够按照 T1_num = ceil(T_num/4)*4 补齐，并补 TZnum 个32比特的0；同时检查 .irc 和 .ird 每4个32bit字换行的格式要求。
 * 4. 子信道完整性样例：用于验证所有 (in_num, out_num) 子信道均被完整写出，不能遗漏偶数或奇数 out_num 的子信道；该检查同时适用于 .ird 和 .irc。
 * 5. 定点边界样例：用于验证 fi 定点化时的舍入、饱和、正负值边界行为，确保 Hq、.irc 与预期一致。
-* 6. 自定义样例1：运行脚本时通过命令行提示输入 `IN_num / OUT_num / T_num / Nsample`，默认参数分别为 `4 / 4 / 1 / 2`；该样例允许任意正整数 `IN_num / OUT_num`，不依赖 `2 × 2` block 划分。
-* 当 `IN_num = OUT_num` 时，自定义样例文件名为 `validation_custom_bidi.mat`；所有非对角线子信道默认全0；所有对角线（`ch = (m − 1) · OUT_num + n`，且 `m = n`）上的子信道仅配置 1 个 tap，其取值固定为 `delay = 0`、`real = 1`、`imag = 0`。
+* 6. 自定义样例1：运行脚本时通过命令行提示输入 `IN_num / OUT_num / T_num / Nsample`，默认参数分别为 `4 / 4 / 1 / 2`；该样例允许任意正整数 `IN_num / OUT_num`。
+* 当 `IN_num = OUT_num` 时，自定义样例文件名为 `validation_custom_bidi.mat`；所有不在对角线子信道默认全0；所有IN_num = OUT_num个对角线元素（`ch = (m − 1) · OUT_num + n`，且 `m = n`）上的子信道仅配置 1 个 tap，其取值固定为 `delay = 0`、`real = 1`、`imag = 0`。
 * 当 `IN_num != OUT_num` 时，需要额外询问该样例用于验证“MIMO单向信道”还是“MIMO双向信道”：
 * 若选择“MIMO单向信道”，则输出文件名为 `validation_custom_uni.mat`；对角线定义为所有满足 `m = n` 且 `1 <= m <= min(IN_num, OUT_num)` 的子信道，这些子信道仅配置 1 个 tap，其取值固定为 `delay = 0`、`real = 1`、`imag = 0`；其余子信道全0。
 * 若选择“MIMO双向信道”，则输出文件名为 `validation_custom_bidi.mat`；需要生成 `(IN_num + OUT_num) × (IN_num + OUT_num)` 的大矩阵，并在 `m = n` 的位置配置 1 个 tap，其取值固定为 `delay = 0`、`real = 1`、`imag = 0`；其余子信道全0。
-* 自定义样例中的“单向/双向”询问仅用于验证样例生成，不影响主脚本处理真实 `H` 时的“MIMO双向测试”逻辑。
+* 自定义样例中的“单向/双向”询问仅用于验证样例生成，不影响主脚本处理真实 `H` 时的“双向信道测试并置零”逻辑。
 
 ## 验证样例设计要求
 * 各验证样例中的 delay、real、imag 应尽量采用人工容易分辨的编码方式，能够快速看出属于哪个 sample、哪个 in_num、哪个 out_num、哪个 tap。
@@ -127,7 +122,7 @@ fclose(delay_coff_file);
 * 在验证样例生成逻辑中，加入接近定点上下限、超范围、小数舍入等数值，用于验证 fi 的舍入和饱和行为。
 * 更新 README.md，列出每个验证样例文件的用途、建议检查项和对应预期现象。
 * 如有必要，扩展现有校验脚本，使其能针对多个验证样例执行一致性检查，而不是仅面向单个样例文件。
-* 校验脚本需要覆盖“MIMO双向测试”打开后的输出结果，能够检查非对角块清零后的 `H / Hq / .irc / .ird` 是否一致。
+* 校验脚本需要覆盖“双向信道测试并置零”打开后的输出结果，能够检查非保留块清零后的 `H / Hq / .irc / .ird` 是否一致。
 
 
 
